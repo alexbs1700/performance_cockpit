@@ -1,15 +1,16 @@
-"""Download all Garmin activities to the local raw zone.
+"""Download all Garmin activities to the raw zone, on disk or in Cloud Storage.
 
-For each activity it stores:
-    data/raw/{user_id}/summary/{activity_id}.json   full activity summary
-    data/raw/{user_id}/splits/{activity_id}.json    laps as recorded by Garmin
-    data/raw/{user_id}/fit/{activity_id}.fit        original file from the watch
+For each activity it stores, under data/raw/ locally or gs://{bucket}/raw/ in the cloud:
+    {user_id}/summary/{activity_id}.json   full activity summary
+    {user_id}/splits/{activity_id}.json    laps as recorded by Garmin
+    {user_id}/fit/{activity_id}.fit        original file from the watch
 
-Idempotent: activities whose summary file already exists are skipped. The
-summary is written last, so an interrupted run simply resumes next time.
+Idempotent: activities whose summary already exists are skipped. The summary is
+written last, so an interrupted run simply resumes next time.
 
 Run with:
     uv run --env-file .env python -m performance_cockpit.download_garmin_data --max-new 5
+    uv run --env-file .env python -m performance_cockpit.download_garmin_data --bucket NAME
 """
 
 import argparse
@@ -31,6 +32,7 @@ from garminconnect import (
 )
 
 from performance_cockpit.garmin_client import get_client
+from performance_cockpit.storage import GcsStorage, LocalStorage, Storage
 
 log = logging.getLogger(__name__)
 
@@ -49,12 +51,9 @@ def iter_activities(client: Garmin) -> Iterator[dict[str, Any]]:
         start += len(page)
 
 
-def write_atomic(path: Path, data: bytes) -> None:
-    """Write through a temp file so a crash never leaves a half-written file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_bytes(data)
-    tmp.replace(path)
+def activity_key(user_id: str, kind: str, filename: str) -> str:
+    """Return the raw-zone key of one file of one activity, e.g. me/summary/123.json."""
+    return f"{user_id}/{kind}/{filename}"
 
 
 def to_json(obj: Any) -> bytes:
@@ -73,24 +72,24 @@ def extract_original(archive: bytes) -> tuple[bytes, str]:
         return zf.read(name), Path(name).suffix.lower() or ".bin"
 
 
-def download_one(client: Garmin, activity_id: int, root: Path) -> None:
+def download_one(client: Garmin, activity_id: int, storage: Storage, user_id: str) -> None:
     """Store splits, the original file and the summary of one activity."""
     aid = str(activity_id)
 
     splits = client.get_activity_splits(aid)
-    write_atomic(root / "splits" / f"{aid}.json", to_json(splits))
+    storage.write(activity_key(user_id, "splits", f"{aid}.json"), to_json(splits))
 
     try:
         archive = client.download_activity(aid, dl_fmt=Garmin.ActivityDownloadFormat.ORIGINAL)
         content, ext = extract_original(archive)
-        write_atomic(root / "fit" / f"{aid}{ext}", content)
+        storage.write(activity_key(user_id, "fit", f"{aid}{ext}"), content)
     except (GarminConnectNotFoundError, zipfile.BadZipFile, ValueError) as e:
         # Manually created activities have no device file: keep going without it.
         log.warning("No original file for %s: %s", aid, e)
 
     # Summary goes last: its presence marks the activity as complete.
     summary = client.get_activity(aid)
-    write_atomic(root / "summary" / f"{aid}.json", to_json(summary))
+    storage.write(activity_key(user_id, "summary", f"{aid}.json"), to_json(summary))
 
 
 def main() -> None:
@@ -99,25 +98,29 @@ def main() -> None:
     parser.add_argument(
         "--max-new", type=int, default=None, help="stop after N new activities (for testing)"
     )
-    parser.add_argument("--data-dir", type=Path, default=Path("data/raw"))
+    destination = parser.add_mutually_exclusive_group()
+    destination.add_argument(
+        "--data-dir", type=Path, default=Path("data/raw"), help="local raw zone (default)"
+    )
+    destination.add_argument("--bucket", help="write to this Cloud Storage bucket instead")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     user_id = os.environ.get("COCKPIT_USER_ID", "me")
-    root = args.data_dir / user_id
+    storage: Storage = GcsStorage(args.bucket) if args.bucket else LocalStorage(args.data_dir)
     client = get_client()
 
     new = skipped = failed = 0
     try:
         for activity in iter_activities(client):
             activity_id = activity["activityId"]
-            if (root / "summary" / f"{activity_id}.json").exists():
+            if storage.exists(activity_key(user_id, "summary", f"{activity_id}.json")):
                 skipped += 1
                 continue
             if args.max_new is not None and new >= args.max_new:
                 break
             try:
-                download_one(client, activity_id, root)
+                download_one(client, activity_id, storage, user_id)
                 new += 1
                 log.info(
                     "Saved %s  %s  %s",

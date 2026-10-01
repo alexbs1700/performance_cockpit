@@ -16,6 +16,7 @@ from garminconnect import (
 )
 
 from performance_cockpit import download_garmin_data as dl
+from performance_cockpit.storage import LocalStorage
 
 MakeZip = Callable[[dict[str, bytes]], bytes]
 
@@ -97,42 +98,61 @@ def test_to_json_keeps_non_ascii() -> None:
     assert "ñ".encode() in dl.to_json({"name": "Mañana"})
 
 
-def test_write_atomic_creates_parents_and_leaves_no_temp(tmp_path: Path) -> None:
-    target = tmp_path / "a" / "b" / "file.json"
+def test_activity_key_includes_user_id() -> None:
+    assert dl.activity_key("test_user", "summary", "1001.json") == "test_user/summary/1001.json"
 
-    dl.write_atomic(target, b"{}")
 
-    assert target.read_bytes() == b"{}"
-    assert list(target.parent.iterdir()) == [target]
+class InMemoryStorage:
+    """A Storage that keeps objects in a dict, preserving write order."""
+
+    def __init__(self) -> None:
+        """Start empty."""
+        self.objects: dict[str, bytes] = {}
+
+    def exists(self, key: str) -> bool:
+        """Return True if ``key`` was written."""
+        return key in self.objects
+
+    def write(self, key: str, data: bytes) -> None:
+        """Record ``data`` under ``key``."""
+        self.objects[key] = data
 
 
 class TestDownloadOne:
     """Storing a single activity."""
 
-    def test_writes_splits_fit_and_summary(self, garmin: MagicMock, tmp_path: Path) -> None:
-        dl.download_one(garmin, 1001, tmp_path)
+    def test_writes_splits_fit_then_summary_last(self, garmin: MagicMock) -> None:
+        storage = InMemoryStorage()
 
-        assert json.loads((tmp_path / "splits" / "1001.json").read_bytes())["activityId"] == 1001
-        assert (tmp_path / "fit" / "1001.fit").read_bytes() == b"FITDATA"
-        assert json.loads((tmp_path / "summary" / "1001.json").read_bytes())["activityId"] == 1001
+        dl.download_one(garmin, 1001, storage, "test_user")
 
-    def test_missing_original_still_writes_summary(self, garmin: MagicMock, tmp_path: Path) -> None:
+        assert list(storage.objects) == [
+            "test_user/splits/1001.json",
+            "test_user/fit/1001.fit",
+            "test_user/summary/1001.json",
+        ]
+        assert storage.objects["test_user/fit/1001.fit"] == b"FITDATA"
+        assert json.loads(storage.objects["test_user/summary/1001.json"])["activityId"] == 1001
+
+    def test_missing_original_still_writes_summary(self, garmin: MagicMock) -> None:
         garmin.download_activity.side_effect = GarminConnectNotFoundError("no file")
+        storage = InMemoryStorage()
 
-        dl.download_one(garmin, 1001, tmp_path)
+        dl.download_one(garmin, 1001, storage, "test_user")
 
-        assert not (tmp_path / "fit").exists()
-        assert (tmp_path / "summary" / "1001.json").exists()
+        assert list(storage.objects) == [
+            "test_user/splits/1001.json",
+            "test_user/summary/1001.json",
+        ]
 
-    def test_failure_before_summary_leaves_activity_incomplete(
-        self, garmin: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_failure_before_summary_leaves_activity_incomplete(self, garmin: MagicMock) -> None:
         garmin.get_activity.side_effect = GarminConnectConnectionError("boom")
+        storage = InMemoryStorage()
 
         with pytest.raises(GarminConnectConnectionError):
-            dl.download_one(garmin, 1001, tmp_path)
+            dl.download_one(garmin, 1001, storage, "test_user")
 
-        assert not (tmp_path / "summary" / "1001.json").exists()
+        assert not storage.exists("test_user/summary/1001.json")
 
 
 class TestMain:
@@ -149,7 +169,7 @@ class TestMain:
     def test_skips_activities_already_stored(
         self, garmin: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        dl.write_atomic(tmp_path / "test_user" / "summary" / "1001.json", b"{}")
+        LocalStorage(tmp_path).write("test_user/summary/1001.json", b"{}")
 
         run_main(monkeypatch, garmin, "--data-dir", str(tmp_path))
 
@@ -185,3 +205,23 @@ class TestMain:
         run_main(monkeypatch, garmin, "--data-dir", str(tmp_path))
 
         garmin.get_activity.assert_not_called()
+
+    def test_bucket_flag_writes_to_cloud_storage(
+        self, garmin: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        storage = InMemoryStorage()
+        storage.write("test_user/summary/1001.json", b"{}")
+        gcs_storage_cls = MagicMock(return_value=storage)
+        monkeypatch.setattr(dl, "GcsStorage", gcs_storage_cls)
+
+        run_main(monkeypatch, garmin, "--bucket", "test-bucket")
+
+        gcs_storage_cls.assert_called_once_with("test-bucket")
+        garmin.get_activity.assert_called_once_with("1002")
+        assert storage.exists("test_user/summary/1002.json")
+
+    def test_bucket_and_data_dir_are_mutually_exclusive(
+        self, garmin: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        with pytest.raises(SystemExit):
+            run_main(monkeypatch, garmin, "--bucket", "b", "--data-dir", str(tmp_path))
