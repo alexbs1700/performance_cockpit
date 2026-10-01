@@ -3,7 +3,8 @@
 import json
 import sys
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -225,3 +226,34 @@ class TestMain:
     ) -> None:
         with pytest.raises(SystemExit):
             run_main(monkeypatch, garmin, "--bucket", "b", "--data-dir", str(tmp_path))
+
+    def test_token_secret_logs_in_from_secret_manager(
+        self, garmin: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store_cls = MagicMock(name="SecretTokenStore")
+        monkeypatch.setattr(dl, "SecretTokenStore", store_cls)
+
+        @contextmanager
+        def fake_client_from_secret(store: MagicMock) -> Iterator[MagicMock]:
+            assert store is store_cls.return_value
+            yield garmin
+
+        monkeypatch.setattr(dl, "client_from_secret", fake_client_from_secret)
+        monkeypatch.setattr(dl, "get_client", MagicMock(side_effect=AssertionError("local login")))
+        monkeypatch.setenv("COCKPIT_USER_ID", "test_user")
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "download_garmin_data",
+                "--data-dir",
+                str(tmp_path),
+                "--token-secret",
+                "projects/p/secrets/s",
+            ],
+        )
+
+        dl.main()
+
+        store_cls.assert_called_once_with("projects/p/secrets/s")
+        assert (tmp_path / "test_user" / "summary" / "1002.json").exists()

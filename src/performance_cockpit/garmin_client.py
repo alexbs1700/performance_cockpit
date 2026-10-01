@@ -4,11 +4,19 @@ Run with:
     uv run --env-file .env python -m performance_cockpit.garmin_client
 """
 
+import json
+import logging
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from getpass import getpass
 from pathlib import Path
 
 from garminconnect import Garmin
+
+from performance_cockpit.token_secret import SecretTokenStore
+
+log = logging.getLogger(__name__)
 
 TOKEN_DIR = Path("~/.garminconnect").expanduser()
 TOKEN_FILE = TOKEN_DIR / "garmin_tokens.json"
@@ -31,6 +39,28 @@ def get_client() -> Garmin:
         )
     client.login(str(TOKEN_DIR))
     return client
+
+
+@contextmanager
+def client_from_secret(store: SecretTokenStore) -> Iterator[Garmin]:
+    """Yield a Garmin client logged in with tokens from Secret Manager.
+
+    Never prompts for a password: if the stored tokens are unusable, login raises. On exit,
+    even after an error, tokens refreshed during the run are written back to the secret,
+    because the refresh token they replaced may no longer work.
+    """
+    loaded = store.load()
+    client = Garmin()
+    try:
+        client.login(loaded.payload)
+        yield client
+    finally:
+        current = client.client.dumps()
+        current_tokens = json.loads(current)
+        # A failed login clears the tokens; never overwrite the secret with an empty set.
+        if current_tokens.get("di_refresh_token") and current_tokens != json.loads(loaded.payload):
+            store.replace(current, previous=loaded)
+            log.info("Saved refreshed Garmin tokens to Secret Manager")
 
 
 def main() -> None:

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from performance_cockpit import garmin_client
+from performance_cockpit.token_secret import SecretTokens
 
 
 @pytest.fixture
@@ -61,3 +62,68 @@ def test_main_prints_recent_activities(
     assert "running" in out
     assert "10.00 km" in out
     assert "id=1001" in out
+
+
+class TestClientFromSecret:
+    """Logging in from Secret Manager and writing refreshed tokens back."""
+
+    OLD_TOKENS = '{"di_token": "old", "di_refresh_token": "r1", "di_client_id": "c"}'
+    NEW_TOKENS = '{"di_token": "new", "di_refresh_token": "r2", "di_client_id": "c"}'
+
+    @pytest.fixture
+    def store(self) -> MagicMock:
+        """A fake SecretTokenStore holding OLD_TOKENS as version 3."""
+        store = MagicMock(name="token_store")
+        store.load.return_value = SecretTokens(self.OLD_TOKENS, "projects/p/secrets/s/versions/3")
+        return store
+
+    def test_logs_in_with_secret_payload(self, fake_garmin: MagicMock, store: MagicMock) -> None:
+        fake_garmin.return_value.client.dumps.return_value = self.OLD_TOKENS
+
+        with garmin_client.client_from_secret(store) as client:
+            assert client is fake_garmin.return_value
+
+        fake_garmin.assert_called_once_with()
+        client.login.assert_called_once_with(self.OLD_TOKENS)
+
+    def test_unchanged_tokens_are_not_saved(self, fake_garmin: MagicMock, store: MagicMock) -> None:
+        # Same content, different formatting: compared as JSON, so not a change.
+        fake_garmin.return_value.client.dumps.return_value = self.OLD_TOKENS.replace(" ", "")
+
+        with garmin_client.client_from_secret(store):
+            pass
+
+        store.replace.assert_not_called()
+
+    def test_refreshed_tokens_replace_loaded_version(
+        self, fake_garmin: MagicMock, store: MagicMock
+    ) -> None:
+        fake_garmin.return_value.client.dumps.return_value = self.NEW_TOKENS
+
+        with garmin_client.client_from_secret(store):
+            pass
+
+        store.replace.assert_called_once_with(self.NEW_TOKENS, previous=store.load.return_value)
+
+    def test_refreshed_tokens_are_saved_even_when_run_fails(
+        self, fake_garmin: MagicMock, store: MagicMock
+    ) -> None:
+        fake_garmin.return_value.client.dumps.return_value = self.NEW_TOKENS
+
+        with pytest.raises(RuntimeError), garmin_client.client_from_secret(store):
+            raise RuntimeError("download crashed")
+
+        store.replace.assert_called_once()
+
+    def test_cleared_tokens_after_failed_login_are_not_saved(
+        self, fake_garmin: MagicMock, store: MagicMock
+    ) -> None:
+        fake_garmin.return_value.login.side_effect = RuntimeError("bad tokens")
+        fake_garmin.return_value.client.dumps.return_value = (
+            '{"di_token": null, "di_refresh_token": null, "di_client_id": null}'
+        )
+
+        with pytest.raises(RuntimeError), garmin_client.client_from_secret(store):
+            pass
+
+        store.replace.assert_not_called()

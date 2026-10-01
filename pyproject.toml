@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "curl-cffi>=0.16.3",
     "garminconnect>=0.3.17",
+    "google-cloud-secret-manager>=2.31.0",
     "google-cloud-storage>=3.15.1",
 ]
 

@@ -11,6 +11,10 @@ written last, so an interrupted run simply resumes next time.
 Run with:
     uv run --env-file .env python -m performance_cockpit.download_garmin_data --max-new 5
     uv run --env-file .env python -m performance_cockpit.download_garmin_data --bucket NAME
+
+In the cloud, tokens come from Secret Manager instead of ~/.garminconnect:
+    python -m performance_cockpit.download_garmin_data --bucket NAME \
+        --token-secret projects/PROJECT/secrets/garmin-tokens
 """
 
 import argparse
@@ -31,8 +35,9 @@ from garminconnect import (
     GarminConnectTooManyRequestsError,
 )
 
-from performance_cockpit.garmin_client import get_client
+from performance_cockpit.garmin_client import client_from_secret, get_client
 from performance_cockpit.storage import GcsStorage, LocalStorage, Storage
+from performance_cockpit.token_secret import SecretTokenStore
 
 log = logging.getLogger(__name__)
 
@@ -92,24 +97,10 @@ def download_one(client: Garmin, activity_id: int, storage: Storage, user_id: st
     storage.write(activity_key(user_id, "summary", f"{aid}.json"), to_json(summary))
 
 
-def main() -> None:
+def download_new(
+    client: Garmin, storage: Storage, user_id: str, max_new: int | None = None
+) -> None:
     """Download every activity not yet stored, stopping early on rate limits."""
-    parser = argparse.ArgumentParser(description="Download Garmin activities.")
-    parser.add_argument(
-        "--max-new", type=int, default=None, help="stop after N new activities (for testing)"
-    )
-    destination = parser.add_mutually_exclusive_group()
-    destination.add_argument(
-        "--data-dir", type=Path, default=Path("data/raw"), help="local raw zone (default)"
-    )
-    destination.add_argument("--bucket", help="write to this Cloud Storage bucket instead")
-    args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-
-    user_id = os.environ.get("COCKPIT_USER_ID", "me")
-    storage: Storage = GcsStorage(args.bucket) if args.bucket else LocalStorage(args.data_dir)
-    client = get_client()
-
     new = skipped = failed = 0
     try:
         for activity in iter_activities(client):
@@ -117,7 +108,7 @@ def main() -> None:
             if storage.exists(activity_key(user_id, "summary", f"{activity_id}.json")):
                 skipped += 1
                 continue
-            if args.max_new is not None and new >= args.max_new:
+            if max_new is not None and new >= max_new:
                 break
             try:
                 download_one(client, activity_id, storage, user_id)
@@ -136,6 +127,35 @@ def main() -> None:
         log.warning("Rate limited by Garmin. Stopping here; rerun later to resume.")
 
     log.info("Done: %d new, %d already stored, %d failed", new, skipped, failed)
+
+
+def main() -> None:
+    """Parse arguments, pick the storage and token source, and download new activities."""
+    parser = argparse.ArgumentParser(description="Download Garmin activities.")
+    parser.add_argument(
+        "--max-new", type=int, default=None, help="stop after N new activities (for testing)"
+    )
+    destination = parser.add_mutually_exclusive_group()
+    destination.add_argument(
+        "--data-dir", type=Path, default=Path("data/raw"), help="local raw zone (default)"
+    )
+    destination.add_argument("--bucket", help="write to this Cloud Storage bucket instead")
+    parser.add_argument(
+        "--token-secret",
+        help="Secret Manager secret holding Garmin tokens (projects/P/secrets/S); "
+        "default is the local ~/.garminconnect cache",
+    )
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    user_id = os.environ.get("COCKPIT_USER_ID", "me")
+    storage: Storage = GcsStorage(args.bucket) if args.bucket else LocalStorage(args.data_dir)
+
+    if args.token_secret:
+        with client_from_secret(SecretTokenStore(args.token_secret)) as client:
+            download_new(client, storage, user_id, args.max_new)
+    else:
+        download_new(get_client(), storage, user_id, args.max_new)
 
 
 if __name__ == "__main__":
