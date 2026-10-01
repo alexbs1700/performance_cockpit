@@ -1,0 +1,8 @@
+{
+  "activityId": 1001,
+  "activityName": "Test Run",
+  "startTimeLocal": "2026-01-01 08:00:00",
+  "activityType": {"typeKey": "running"},
+  "distance": 10000.0,
+  "duration": 3000.0
+}

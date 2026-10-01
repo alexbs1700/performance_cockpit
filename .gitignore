@@ -1,13 +1,19 @@
-# Python-generated files
+# Python / tooling
 __pycache__/
-*.py[oc]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
 build/
 dist/
-wheels/
-*.egg-info
-
-# Virtual environments
-.venv
 
 # Secrets
-*.env
+.env
+
+# Personal data: raw downloads and temp files
+data/
+*.tmp
+
+# Jupyter / macOS
+.ipynb_checkpoints/
+.DS_Store
