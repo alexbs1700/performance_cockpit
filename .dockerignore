@@ -1,0 +1,11 @@
+# Keep the image small and free of personal data and secrets.
+.env
+data/
+notebooks/
+tests/
+.git/
+.venv/
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.tmp

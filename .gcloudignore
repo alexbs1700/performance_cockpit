@@ -1,0 +1,7 @@
+# Files never uploaded to Cloud Build. Personal data and secrets must stay on this machine.
+.gcloudignore
+.git/
+.gitignore
+#!include:.gitignore
+notebooks/
+tests/
