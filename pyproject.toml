@@ -7,7 +7,11 @@ authors = [
     { name = "alexbs17", email = "alexbs1700@gmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "curl-cffi>=0.16.3",
+    "garminconnect>=0.3.17",
+    "google-cloud-storage>=3.15.1",
+]
 
 [project.scripts]
 performance-cockpit = "performance_cockpit:main"
@@ -18,5 +22,6 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "ipykernel>=7.4.0",
     "pre-commit>=4.6.2",
 ]
