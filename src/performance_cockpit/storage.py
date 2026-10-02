@@ -2,9 +2,10 @@
 
 Keys are slash-separated paths relative to the raw zone, such as
 ``{user_id}/summary/{activity_id}.json``. The same key maps to ``data/raw/{key}`` on disk or
-``gs://{bucket}/raw/{key}`` in Cloud Storage, so the downloader does not care where it writes.
+``gs://{bucket}/raw/{key}`` in Cloud Storage, so callers do not care where data lives.
 """
 
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Protocol
 
@@ -16,7 +17,7 @@ BINARY_CONTENT_TYPE = "application/octet-stream"
 
 
 class Storage(Protocol):
-    """The minimal interface the downloader needs from a storage backend."""
+    """The minimal interface the pipeline needs from a storage backend."""
 
     def exists(self, key: str) -> bool:
         """Return True if an object is stored under ``key``."""
@@ -24,6 +25,14 @@ class Storage(Protocol):
 
     def write(self, key: str, data: bytes) -> None:
         """Store ``data`` under ``key`` all or nothing, replacing any previous object."""
+        ...
+
+    def read(self, key: str) -> bytes:
+        """Return the content stored under ``key``."""
+        ...
+
+    def list_keys(self, prefix: str) -> Iterator[str]:
+        """Yield every key that starts with ``prefix``, e.g. ``me/summary/``."""
         ...
 
 
@@ -46,6 +55,19 @@ class LocalStorage:
         tmp.write_bytes(data)
         tmp.replace(path)
 
+    def read(self, key: str) -> bytes:
+        """Return the content of the file for ``key``."""
+        return (self.root / key).read_bytes()
+
+    def list_keys(self, prefix: str) -> Iterator[str]:
+        """Yield keys of files under ``prefix``, skipping temp files left by a crash."""
+        base = self.root / prefix
+        if not base.is_dir():
+            return
+        for path in sorted(base.rglob("*")):
+            if path.is_file() and path.suffix != ".tmp":
+                yield path.relative_to(self.root).as_posix()
+
 
 class GcsStorage:
     """Stores objects in a Cloud Storage bucket under the ``raw/`` prefix."""
@@ -66,3 +88,12 @@ class GcsStorage:
         """Upload ``data``; GCS only makes an object visible once its upload has completed."""
         content_type = JSON_CONTENT_TYPE if key.endswith(".json") else BINARY_CONTENT_TYPE
         self.bucket.blob(f"{GCS_PREFIX}/{key}").upload_from_string(data, content_type=content_type)
+
+    def read(self, key: str) -> bytes:
+        """Download and return the object for ``key``."""
+        return self.bucket.blob(f"{GCS_PREFIX}/{key}").download_as_bytes()
+
+    def list_keys(self, prefix: str) -> Iterator[str]:
+        """Yield keys of objects under ``prefix``, without the ``raw/`` bucket prefix."""
+        for blob in self.bucket.list_blobs(prefix=f"{GCS_PREFIX}/{prefix}"):
+            yield blob.name.removeprefix(f"{GCS_PREFIX}/")

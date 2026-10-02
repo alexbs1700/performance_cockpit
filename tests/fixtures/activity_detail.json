@@ -1,0 +1,23 @@
+{
+  "activityId": 1001,
+  "activityName": "Test Run",
+  "activityTypeDTO": {"typeId": 1, "typeKey": "running", "parentTypeId": 17},
+  "eventTypeDTO": {"typeId": 9, "typeKey": "uncategorized"},
+  "timeZoneUnitDTO": {"unitId": 1, "unitKey": "Etc/UTC", "timeZone": "Etc/UTC"},
+  "metadataDTO": {"lapCount": 3, "manualActivity": false, "manufacturer": "GARMIN"},
+  "summaryDTO": {
+    "startTimeLocal": "2026-01-01T08:00:00.0",
+    "startTimeGMT": "2026-01-01T08:00:00.0",
+    "distance": 10000.0,
+    "duration": 3000.0,
+    "movingDuration": 2990.0,
+    "elapsedDuration": 3010.0,
+    "averageSpeed": 3.333,
+    "averageHR": 150.0,
+    "maxHR": 175.0,
+    "steps": 9000,
+    "trainingEffect": 3.1,
+    "directWorkoutRpe": 50,
+    "averageSWOLF": 40.0
+  }
+}

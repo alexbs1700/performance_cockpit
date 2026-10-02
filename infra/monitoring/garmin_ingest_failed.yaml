@@ -1,0 +1,41 @@
+# Cloud Monitoring alert: email when any pipeline job execution fails.
+# Create with:
+#   gcloud monitoring policies create --policy-from-file=infra/monitoring/garmin_ingest_failed.yaml \
+#       --notification-channels=CHANNEL_NAME
+# Update an existing policy with:
+#   gcloud monitoring policies update POLICY_NAME --policy-from-file=infra/monitoring/garmin_ingest_failed.yaml
+displayName: Pipeline job execution failed
+combiner: OR
+conditions:
+  - displayName: Failed pipeline job execution
+    conditionThreshold:
+      # Cloud Run writes one point per finished execution, labelled succeeded or failed.
+      filter: >-
+        resource.type = "cloud_run_job"
+        AND resource.labels.job_name = one_of("garmin-ingest", "cockpit-load")
+        AND metric.type = "run.googleapis.com/job/completed_execution_count"
+        AND metric.labels.result = "failed"
+      aggregations:
+        - alignmentPeriod: 300s
+          perSeriesAligner: ALIGN_SUM
+      comparison: COMPARISON_GT
+      thresholdValue: 0
+      duration: 0s
+      trigger:
+        count: 1
+alertStrategy:
+  # The job runs once a day, so a failure has no follow-up data point to resolve it.
+  autoClose: 86400s
+documentation:
+  mimeType: text/markdown
+  content: |
+    A daily pipeline job failed. The incident names the job; check its logs in Cloud Run > Jobs.
+
+    If it is cockpit-load: fix the cause and rerun it; it only loads what is missing.
+
+    If it is garmin-ingest:
+
+    the most likely cause is that the Garmin tokens in Secret Manager stopped working. To renew them:
+    1. Move the stale cache aside: `mv ~/.garminconnect/garmin_tokens.json ~/.garminconnect/garmin_tokens.json.old`
+    2. Log in again: `uv run --env-file .env python -m performance_cockpit.garmin_client`
+    3. Upload the new tokens: `gcloud secrets versions add garmin-tokens --data-file=$HOME/.garminconnect/garmin_tokens.json`

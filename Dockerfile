@@ -1,4 +1,4 @@
-# Image for the daily Garmin ingestion job (Cloud Run Job).
+# One image for every pipeline step; each Cloud Run Job chooses which command to run.
 FROM python:3.12-slim
 
 # Same uv version as the uv-lock pre-commit hook, so uv.lock is read exactly as it was written.
@@ -25,4 +25,5 @@ ENV PATH="/app/.venv/bin:$PATH" \
 RUN useradd --create-home --uid 10001 app
 USER app
 
-ENTRYPOINT ["python", "-m", "performance_cockpit.download_garmin_data"]
+# No default command: each Cloud Run Job picks one of the console scripts from pyproject.toml
+# with --command (garmin-download or load-activities) and passes its own --args.
