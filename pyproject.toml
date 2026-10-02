@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "curl-cffi>=0.16.3",
+    "garmin-fit-sdk>=21.217.0",
     "garminconnect>=0.3.17",
     "google-cloud-bigquery>=3.46.0",
     "google-cloud-secret-manager>=2.31.0",
@@ -18,7 +19,7 @@ dependencies = [
 [project.scripts]
 performance-cockpit = "performance_cockpit:main"
 garmin-download = "performance_cockpit.download_garmin_data:main"
-load-activities = "performance_cockpit.load_activities:main"
+load-warehouse = "performance_cockpit.load_warehouse:main"
 
 [build-system]
 requires = ["uv_build>=0.8.22,<0.9.0"]

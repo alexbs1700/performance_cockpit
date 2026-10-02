@@ -425,6 +425,15 @@ wheels = [
 ]
 
 [[package]]
+name = "garmin-fit-sdk"
+version = "21.217.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5b/07/1b21a25bb3fdf4f3d298bed89fab08bb57556c4eb81444589f568fd410be/garmin_fit_sdk-21.217.0.tar.gz", hash = "sha256:df88c37cb0b28cdebbb1b0aeb9c514b078c832a0ab4e4f4ca14d19ccecd27ed2", size = 208182, upload-time = "2026-09-22T17:26:18.431Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b1/d1/a029c6d76246361be4d7126c2f6a209b63bc6f44e4b855978d178f5632eb/garmin_fit_sdk-21.217.0-py3-none-any.whl", hash = "sha256:382bc4cba7cc3e26bd6d65fbf5ad6864cf15feeafcf21dd226e2697df1063e96", size = 229766, upload-time = "2026-09-22T17:26:16.932Z" },
+]
+
+[[package]]
 name = "garminconnect"
 version = "0.3.17"
 source = { registry = "https://pypi.org/simple" }
@@ -871,6 +880,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "curl-cffi" },
+    { name = "garmin-fit-sdk" },
     { name = "garminconnect" },
     { name = "google-cloud-bigquery" },
     { name = "google-cloud-secret-manager" },
@@ -887,6 +897,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "curl-cffi", specifier = ">=0.16.3" },
+    { name = "garmin-fit-sdk", specifier = ">=21.217.0" },
     { name = "garminconnect", specifier = ">=0.3.17" },
     { name = "google-cloud-bigquery", specifier = ">=3.46.0" },
     { name = "google-cloud-secret-manager", specifier = ">=2.31.0" },

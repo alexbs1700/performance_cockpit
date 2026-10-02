@@ -1,10 +1,9 @@
 """Tests for performance_cockpit.load_activities."""
 
 import json
-import sys
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -14,7 +13,6 @@ from google.cloud import bigquery
 from performance_cockpit import load_activities as la
 from performance_cockpit.storage import LocalStorage
 
-SCHEMA_FILE = Path(__file__).parents[2] / "infra" / "bigquery" / "activities.json"
 FIXTURES_DIR = Path(__file__).parents[1] / "fixtures"
 TABLE_ID = "test-project.cockpit.activities"
 LOADED_AT = datetime(2026, 1, 2, 6, 0, tzinfo=UTC)
@@ -27,26 +25,15 @@ def activity_detail() -> dict[str, Any]:
 
 
 @pytest.fixture
-def table() -> bigquery.Table:
-    """The activities table as BigQuery would return it, built from the schema file."""
-    schema = [bigquery.SchemaField.from_api_repr(f) for f in json.loads(SCHEMA_FILE.read_text())]
-    return bigquery.Table(TABLE_ID, schema=schema)
+def table(make_table: Callable[..., bigquery.Table]) -> bigquery.Table:
+    """The activities table, as BigQuery would return it."""
+    return make_table("activities")
 
 
 @pytest.fixture
-def bq(table: bigquery.Table) -> MagicMock:
+def bq(table: bigquery.Table, make_bigquery_client: Callable[..., MagicMock]) -> MagicMock:
     """A fake BigQuery client whose table already holds activity 1001."""
-    client = MagicMock(name="bigquery_client")
-    client.get_table.return_value = table
-
-    def query(sql: str, **_kwargs: Any) -> MagicMock:
-        job = MagicMock()
-        rows = [SimpleNamespace(activity_id=1001)] if sql.startswith("SELECT") else []
-        job.result.return_value = rows
-        return job
-
-    client.query.side_effect = query
-    return client
+    return make_bigquery_client(table, [1001])
 
 
 @pytest.fixture
@@ -89,33 +76,26 @@ class TestToActivityRow:
         row = la.to_activity_row(activity_detail, "test_user", LOADED_AT)
 
         assert row["avg_power_w"] is None
-        assert row["elevation_gain_m"] is None
+        assert row["start_latitude_deg"] is None
+        assert row["location_name"] is None
 
     def test_rare_fields_stay_in_summary_json(self, activity_detail: dict[str, Any]) -> None:
         row = la.to_activity_row(activity_detail, "test_user", LOADED_AT)
 
         assert row["summary"]["averageSWOLF"] == 40.0
 
-    def test_drops_gps_coordinates(self, activity_detail: dict[str, Any]) -> None:
+    def test_maps_location(self, activity_detail: dict[str, Any]) -> None:
         # Made-up coordinates, added here so the fixture file itself never holds any.
-        gps = {"startLatitude": 1.0, "startLongitude": 2.0, "endLatitude": 3.0, "endLongitude": 4.0}
-        activity_detail["summaryDTO"].update(gps)
+        activity_detail["summaryDTO"].update(
+            {"startLatitude": 1.0, "startLongitude": 2.0, "endLatitude": 3.0, "endLongitude": 4.0}
+        )
+        activity_detail["locationName"] = "Testville"
 
         row = la.to_activity_row(activity_detail, "test_user", LOADED_AT)
 
-        assert not set(gps) & set(row["summary"])
-        assert not set(gps) & set(row)
-
-    def test_does_not_mutate_input(self, activity_detail: dict[str, Any]) -> None:
-        activity_detail["summaryDTO"]["startLatitude"] = 1.0
-
-        la.to_activity_row(activity_detail, "test_user", LOADED_AT)
-
-        assert "startLatitude" in activity_detail["summaryDTO"]
-
-
-def test_activity_id_from_key() -> None:
-    assert la.activity_id_from_key("test_user/summary/1001.json") == 1001
+        assert (row["start_latitude_deg"], row["start_longitude_deg"]) == (1.0, 2.0)
+        assert (row["end_latitude_deg"], row["end_longitude_deg"]) == (3.0, 4.0)
+        assert row["location_name"] == "Testville"
 
 
 def test_merge_sql_updates_all_but_key_columns() -> None:
@@ -129,103 +109,32 @@ def test_merge_sql_updates_all_but_key_columns() -> None:
 
 
 class TestLoadActivities:
-    """The incremental load."""
+    """The incremental load and the full reload."""
 
-    def test_loads_only_activities_not_in_table(
-        self, bq: MagicMock, storage: LocalStorage, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        merge_rows = MagicMock()
-        monkeypatch.setattr(la, "merge_rows", merge_rows)
+    def test_loads_only_activities_not_in_table(self, bq: MagicMock, storage: LocalStorage) -> None:
+        assert la.load_activities(storage, bq, TABLE_ID, "test_user") == 1
 
-        loaded = la.load_activities(storage, bq, TABLE_ID, "test_user")
-
-        assert loaded == 1
-        _client, _table, rows = merge_rows.call_args.args
+        rows = bq.load_table_from_json.call_args.args[0]
         assert [r["activity_id"] for r in rows] == [1002]
+        assert bq.query.call_args_list[-1].args[0].startswith(f"MERGE `{TABLE_ID}`")
 
-    def test_queries_existing_ids_for_this_user_only(
-        self, bq: MagicMock, storage: LocalStorage, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(la, "merge_rows", MagicMock())
+    def test_reload_rewrites_every_activity(self, bq: MagicMock, storage: LocalStorage) -> None:
+        assert la.load_activities(storage, bq, TABLE_ID, "test_user", reload=True) == 2
 
-        la.load_activities(storage, bq, TABLE_ID, "test_user")
-
-        sql = bq.query.call_args_list[0].args[0]
-        params = bq.query.call_args_list[0].kwargs["job_config"].query_parameters
-        assert sql == f"SELECT activity_id FROM `{TABLE_ID}` WHERE user_id = @user_id"
-        assert params[0].value == "test_user"
+        rows = bq.load_table_from_json.call_args.args[0]
+        assert [r["activity_id"] for r in rows] == [1001, 1002]
+        # A reload never asks which ids exist: the MERGE updates them all.
+        assert not any(c.args[0].startswith("SELECT") for c in bq.query.call_args_list)
 
     def test_nothing_new_touches_nothing(self, bq: MagicMock, tmp_path: Path) -> None:
-        empty = LocalStorage(tmp_path)
-
-        assert la.load_activities(empty, bq, TABLE_ID, "test_user") == 0
+        assert la.load_activities(LocalStorage(tmp_path), bq, TABLE_ID, "test_user") == 0
 
         bq.create_table.assert_not_called()
         bq.load_table_from_json.assert_not_called()
 
+    def test_staging_table_is_cleaned_up(self, bq: MagicMock, storage: LocalStorage) -> None:
+        la.load_activities(storage, bq, TABLE_ID, "test_user")
 
-class TestMergeRows:
-    """Staging table, load, MERGE and cleanup."""
-
-    def test_stages_merges_and_cleans_up(self, bq: MagicMock, table: bigquery.Table) -> None:
-        rows = [{"user_id": "test_user", "activity_id": 1002}]
-
-        la.merge_rows(bq, table, rows)
-
-        staging = bq.create_table.call_args.args[0]
-        staging_id = f"{staging.project}.{staging.dataset_id}.{staging.table_id}"
+        staging_id = bq.load_table_from_json.call_args.args[1]
         assert staging_id.startswith(f"{TABLE_ID}_staging_")
-        assert staging.schema == table.schema
-        assert staging.expires is not None
-        assert bq.load_table_from_json.call_args.args[:2] == (rows, staging_id)
-        merge_query = bq.query.call_args.args[0]
-        assert merge_query.startswith(f"MERGE `{TABLE_ID}`")
-        assert f"USING `{staging_id}`" in merge_query
         bq.delete_table.assert_called_once_with(staging_id, not_found_ok=True)
-
-    def test_staging_table_deleted_even_when_merge_fails(
-        self, bq: MagicMock, table: bigquery.Table
-    ) -> None:
-        bq.query.side_effect = RuntimeError("merge failed")
-
-        with pytest.raises(RuntimeError):
-            la.merge_rows(bq, table, [{"user_id": "test_user", "activity_id": 1002}])
-
-        bq.delete_table.assert_called_once()
-
-
-class TestMain:
-    """Command line wiring."""
-
-    def run_main(self, monkeypatch: pytest.MonkeyPatch, *args: str) -> MagicMock:
-        """Run main() with a fake BigQuery client class; return the load_activities mock."""
-        monkeypatch.setattr(la.bigquery, "Client", MagicMock(name="Client"))
-        load = MagicMock(name="load_activities")
-        monkeypatch.setattr(la, "load_activities", load)
-        monkeypatch.setenv("COCKPIT_USER_ID", "test_user")
-        monkeypatch.setattr(sys, "argv", ["load-activities", *args])
-        la.main()
-        return load
-
-    def test_project_comes_from_table_id(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        load = self.run_main(monkeypatch, "--table", TABLE_ID, "--data-dir", str(tmp_path))
-
-        la.bigquery.Client.assert_called_once_with(project="test-project")
-        storage, _client, table_id, user_id = load.call_args.args
-        assert isinstance(storage, LocalStorage)
-        assert (table_id, user_id) == (TABLE_ID, "test_user")
-
-    def test_bucket_reads_from_cloud_storage(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        gcs_cls = MagicMock(name="GcsStorage")
-        monkeypatch.setattr(la, "GcsStorage", gcs_cls)
-
-        load = self.run_main(monkeypatch, "--table", TABLE_ID, "--bucket", "test-bucket")
-
-        gcs_cls.assert_called_once_with("test-bucket")
-        assert load.call_args.args[0] is gcs_cls.return_value
-
-    def test_table_is_required(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        with pytest.raises(SystemExit):
-            self.run_main(monkeypatch, "--bucket", "test-bucket")

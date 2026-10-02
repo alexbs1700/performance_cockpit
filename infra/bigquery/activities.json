@@ -34,6 +34,11 @@
   {"name": "lap_count", "type": "INT64", "description": "Number of laps"},
   {"name": "is_manual", "type": "BOOL", "description": "Entered by hand rather than recorded by a device"},
   {"name": "device_manufacturer", "type": "STRING", "description": "Manufacturer of the recording device"},
-  {"name": "summary", "type": "JSON", "description": "Full Garmin summaryDTO without GPS coordinates"},
-  {"name": "loaded_at", "type": "TIMESTAMP", "mode": "REQUIRED", "description": "When this row was last written"}
+  {"name": "summary", "type": "JSON", "description": "Full Garmin summaryDTO, including fields without a column"},
+  {"name": "loaded_at", "type": "TIMESTAMP", "mode": "REQUIRED", "description": "When this row was last written"},
+  {"name": "start_latitude_deg", "type": "FLOAT64", "description": "Latitude where the activity started"},
+  {"name": "start_longitude_deg", "type": "FLOAT64", "description": "Longitude where the activity started"},
+  {"name": "end_latitude_deg", "type": "FLOAT64", "description": "Latitude where the activity ended"},
+  {"name": "end_longitude_deg", "type": "FLOAT64", "description": "Longitude where the activity ended"},
+  {"name": "location_name", "type": "STRING", "description": "Place name Garmin assigned to the start"}
 ]

@@ -26,4 +26,4 @@ RUN useradd --create-home --uid 10001 app
 USER app
 
 # No default command: each Cloud Run Job picks one of the console scripts from pyproject.toml
-# with --command (garmin-download or load-activities) and passes its own --args.
+# with --command (garmin-download or load-warehouse) and passes its own --args.

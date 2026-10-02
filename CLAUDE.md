@@ -13,6 +13,7 @@ that creates, modifies or deletes cloud resources or could cost money.
 - Tests: `uv run pytest`
 - All checks (ruff, gitleaks, uv-lock, nbstripout, pytest): `uv run pre-commit run --all-files`
 - Downloader: `uv run --env-file .env python -m performance_cockpit.download_garmin_data --max-new 5`
+- Warehouse load: `uv run load-warehouse --dataset training-performance-cockpit.cockpit --data-dir data/raw`
 
 ## Conventions
 

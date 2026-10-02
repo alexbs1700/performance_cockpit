@@ -1,33 +1,29 @@
 """Load activity summaries from the raw zone into the BigQuery ``activities`` table.
 
 Incremental and idempotent: only summaries whose activity is not yet in the table are read,
-and rows are MERGEd on (user_id, activity_id), so rerunning never creates duplicates. GPS
-coordinates are dropped: the warehouse never stores where activities happened.
-
-Run with:
-    uv run load-activities --table PROJECT.cockpit.activities --data-dir data/raw   # backfill
-    uv run load-activities --table PROJECT.cockpit.activities --bucket NAME         # cloud job
+and rows are MERGEd on (user_id, activity_id), so rerunning never creates duplicates. With
+``reload=True`` every summary is read again and existing rows are updated in place, which is
+how new columns get filled for activities loaded before the columns existed.
 """
 
-import argparse
 import json
 import logging
-import os
-import uuid
-from datetime import UTC, datetime, timedelta
-from pathlib import Path, PurePosixPath
+from datetime import UTC, datetime
 from typing import Any
 
 from google.cloud import bigquery
 
-from performance_cockpit.storage import GcsStorage, LocalStorage, Storage
+from performance_cockpit.bigquery_loading import (
+    KEY_COLUMNS,
+    activity_id_from_key,
+    load_rows,
+    loaded_activity_ids,
+    staging_table,
+    table_path,
+)
+from performance_cockpit.storage import Storage
 
 log = logging.getLogger(__name__)
-
-KEY_COLUMNS = ("user_id", "activity_id")
-GPS_FIELDS = frozenset({"startLatitude", "startLongitude", "endLatitude", "endLongitude"})
-# A safety net: if the job dies before deleting its staging table, BigQuery drops it anyway.
-STAGING_TABLE_LIFETIME = timedelta(hours=1)
 
 # Typed column name -> field in Garmin's summaryDTO. Everything else stays in the JSON column.
 SUMMARY_COLUMNS: dict[str, str] = {
@@ -57,10 +53,18 @@ SUMMARY_COLUMNS: dict[str, str] = {
     "feel": "directWorkoutFeel",
 }
 
+# Added after the first release; BigQuery only appends new columns, so they come last.
+LOCATION_COLUMNS: dict[str, str] = {
+    "start_latitude_deg": "startLatitude",
+    "start_longitude_deg": "startLongitude",
+    "end_latitude_deg": "endLatitude",
+    "end_longitude_deg": "endLongitude",
+}
+
 
 def to_activity_row(activity: dict[str, Any], user_id: str, loaded_at: datetime) -> dict[str, Any]:
-    """Turn one raw Garmin activity summary into an ``activities`` row, without GPS fields."""
-    summary = {k: v for k, v in (activity.get("summaryDTO") or {}).items() if k not in GPS_FIELDS}
+    """Turn one raw Garmin activity summary into an ``activities`` row."""
+    summary = activity.get("summaryDTO") or {}
     metadata = activity.get("metadataDTO") or {}
     start_time_gmt = summary.get("startTimeGMT")
     return {
@@ -79,12 +83,9 @@ def to_activity_row(activity: dict[str, Any], user_id: str, loaded_at: datetime)
         "device_manufacturer": metadata.get("manufacturer"),
         "summary": summary,
         "loaded_at": loaded_at.isoformat(),
+        **{column: summary.get(field) for column, field in LOCATION_COLUMNS.items()},
+        "location_name": activity.get("locationName"),
     }
-
-
-def activity_id_from_key(key: str) -> int:
-    """Return the activity id encoded in a summary key such as ``me/summary/123.json``."""
-    return int(PurePosixPath(key).stem)
 
 
 def merge_sql(target: str, staging: str, columns: list[str]) -> str:
@@ -99,73 +100,35 @@ def merge_sql(target: str, staging: str, columns: list[str]) -> str:
     )
 
 
-def existing_activity_ids(client: bigquery.Client, target: str, user_id: str) -> set[int]:
-    """Return the ids of this user's activities already in the table."""
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[bigquery.ScalarQueryParameter("user_id", "STRING", user_id)]
-    )
-    query = f"SELECT activity_id FROM `{target}` WHERE user_id = @user_id"
-    return {row.activity_id for row in client.query(query, job_config=job_config).result()}
-
-
 def merge_rows(client: bigquery.Client, table: bigquery.Table, rows: list[dict[str, Any]]) -> None:
     """Load ``rows`` into a temporary staging table, then MERGE it into ``table``."""
-    target = f"{table.project}.{table.dataset_id}.{table.table_id}"
-    # A unique name per run, so two overlapping runs never share a staging table.
-    staging_id = f"{target}_staging_{uuid.uuid4().hex[:8]}"
-    staging = bigquery.Table(staging_id, schema=table.schema)
-    staging.expires = datetime.now(UTC) + STAGING_TABLE_LIFETIME
-    client.create_table(staging)
-    try:
-        load_config = bigquery.LoadJobConfig(schema=table.schema)
-        client.load_table_from_json(rows, staging_id, job_config=load_config).result()
+    with staging_table(client, table) as staging_id:
+        load_rows(client, staging_id, table.schema, rows)
         columns = [field.name for field in table.schema]
-        client.query(merge_sql(target, staging_id, columns)).result()
-    finally:
-        client.delete_table(staging_id, not_found_ok=True)
+        client.query(merge_sql(table_path(table), staging_id, columns)).result()
 
 
-def load_activities(storage: Storage, client: bigquery.Client, table_id: str, user_id: str) -> int:
-    """Load every summary of ``user_id`` not yet in ``table_id``; return how many were loaded."""
+def load_activities(
+    storage: Storage, client: bigquery.Client, table_id: str, user_id: str, reload: bool = False
+) -> int:
+    """Load summaries of ``user_id`` into ``table_id``; return how many rows were written.
+
+    By default only activities missing from the table are read. ``reload`` rewrites them all.
+    """
     table = client.get_table(table_id)
-    target = f"{table.project}.{table.dataset_id}.{table.table_id}"
-    known_ids = existing_activity_ids(client, target, user_id)
-    new_keys = [
+    target = table_path(table)
+    known_ids = set() if reload else loaded_activity_ids(client, target, user_id)
+    keys = [
         key
         for key in storage.list_keys(f"{user_id}/summary/")
         if key.endswith(".json") and activity_id_from_key(key) not in known_ids
     ]
-    if not new_keys:
-        log.info("Nothing to load: all %d activities already in %s", len(known_ids), target)
+    if not keys:
+        log.info("%s: nothing to load, %d activities already loaded", target, len(known_ids))
         return 0
 
     loaded_at = datetime.now(UTC)
-    rows = [to_activity_row(json.loads(storage.read(k)), user_id, loaded_at) for k in new_keys]
+    rows = [to_activity_row(json.loads(storage.read(k)), user_id, loaded_at) for k in keys]
     merge_rows(client, table, rows)
-    log.info("Loaded %d new activities into %s", len(rows), target)
+    log.info("%s: wrote %d activities", target, len(rows))
     return len(rows)
-
-
-def main() -> None:
-    """Parse arguments and load new activity summaries into BigQuery."""
-    parser = argparse.ArgumentParser(description="Load Garmin activities into BigQuery.")
-    parser.add_argument(
-        "--table", required=True, help="fully qualified table id: PROJECT.DATASET.TABLE"
-    )
-    source = parser.add_mutually_exclusive_group()
-    source.add_argument(
-        "--data-dir", type=Path, default=Path("data/raw"), help="local raw zone (default)"
-    )
-    source.add_argument("--bucket", help="read from this Cloud Storage bucket instead")
-    args = parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-
-    user_id = os.environ.get("COCKPIT_USER_ID", "me")
-    storage: Storage = GcsStorage(args.bucket) if args.bucket else LocalStorage(args.data_dir)
-    # The project comes from the table id, so it never depends on local gcloud defaults.
-    client = bigquery.Client(project=args.table.split(".")[0])
-    load_activities(storage, client, args.table, user_id)
-
-
-if __name__ == "__main__":
-    main()

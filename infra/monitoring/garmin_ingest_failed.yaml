@@ -33,9 +33,7 @@ documentation:
 
     If it is cockpit-load: fix the cause and rerun it; it only loads what is missing.
 
-    If it is garmin-ingest:
-
-    the most likely cause is that the Garmin tokens in Secret Manager stopped working. To renew them:
+    If it is garmin-ingest, the most likely cause is that the Garmin tokens in Secret Manager stopped working. To renew them:
     1. Move the stale cache aside: `mv ~/.garminconnect/garmin_tokens.json ~/.garminconnect/garmin_tokens.json.old`
     2. Log in again: `uv run --env-file .env python -m performance_cockpit.garmin_client`
     3. Upload the new tokens: `gcloud secrets versions add garmin-tokens --data-file=$HOME/.garminconnect/garmin_tokens.json`

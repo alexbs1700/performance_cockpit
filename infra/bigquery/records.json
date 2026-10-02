@@ -1,0 +1,16 @@
+[
+  {"name": "user_id", "type": "STRING", "mode": "REQUIRED", "description": "Owner of the activity"},
+  {"name": "activity_id", "type": "INT64", "mode": "REQUIRED", "description": "Garmin activity id"},
+  {"name": "recorded_at", "type": "TIMESTAMP", "mode": "REQUIRED", "description": "When the watch recorded this point; partition column"},
+  {"name": "elapsed_s", "type": "FLOAT64", "description": "Seconds since the first record of the activity"},
+  {"name": "distance_m", "type": "FLOAT64", "description": "Cumulative distance in meters"},
+  {"name": "speed_mps", "type": "FLOAT64", "description": "Speed in meters per second"},
+  {"name": "altitude_m", "type": "FLOAT64", "description": "Altitude in meters"},
+  {"name": "heart_rate_bpm", "type": "INT64", "description": "Heart rate"},
+  {"name": "cadence_rpm", "type": "FLOAT64", "description": "Cadence as Garmin stores it; for running, steps per minute = 2 x this"},
+  {"name": "power_w", "type": "INT64", "description": "Power in watts"},
+  {"name": "temperature_c", "type": "INT64", "description": "Device temperature in Celsius"},
+  {"name": "latitude_deg", "type": "FLOAT64", "description": "Latitude"},
+  {"name": "longitude_deg", "type": "FLOAT64", "description": "Longitude"},
+  {"name": "loaded_at", "type": "TIMESTAMP", "mode": "REQUIRED", "description": "When this row was written"}
+]

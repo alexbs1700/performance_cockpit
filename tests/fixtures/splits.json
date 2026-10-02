@@ -1,0 +1,33 @@
+{
+  "activityId": 1001,
+  "lapDTOs": [
+    {
+      "startTimeGMT": "2026-01-01T08:00:00.0",
+      "lapIndex": 1,
+      "distance": 1000.0,
+      "duration": 360.0,
+      "movingDuration": 358.0,
+      "elapsedDuration": 361.0,
+      "averageSpeed": 2.778,
+      "averageHR": 135.0,
+      "intensityType": "WARMUP",
+      "wktStepIndex": 0,
+      "lengthDTOs": [],
+      "connectIQMeasurement": []
+    },
+    {
+      "startTimeGMT": "2026-01-01T08:06:00.0",
+      "lapIndex": 2,
+      "distance": 1000.0,
+      "duration": 220.0,
+      "averageSpeed": 4.545,
+      "averageHR": 172.0,
+      "intensityType": "ACTIVE",
+      "wktStepIndex": 1,
+      "averageSWOLF": 40.0,
+      "lengthDTOs": [],
+      "connectIQMeasurement": []
+    }
+  ],
+  "eventDTOs": []
+}
